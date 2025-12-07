@@ -2,6 +2,7 @@ import { createClient } from "@/lib/supabase/server";
 import { notFound } from "next/navigation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Calendar, MapPin } from "lucide-react";
+import RSVPForm from "@/components/rsvp/rsvp-form";
 
 export default async function RSVPPage({
     params,
@@ -49,6 +50,15 @@ export default async function RSVPPage({
         .order("start_datetime", { ascending: true });
 
     const sessionsData: any[] = sessions || [];
+
+    // Fetch existing RSVPs for these guests
+    const guestIds = guestsData.map(g => g.id);
+    const { data: existingRsvps } = await supabase
+        .from("rsvps")
+        .select("*")
+        .in("guest_id", guestIds);
+
+    const rsvpsData = existingRsvps || [];
 
     return (
         <div className="min-h-screen bg-liquid">
@@ -162,11 +172,14 @@ export default async function RSVPPage({
                         )}
                     </div>
 
-                    <div className="mt-8 p-6 border rounded-lg bg-muted/50 text-center">
-                        <p className="text-sm text-muted-foreground">
-                            RSVP functionality coming soon! You'll be able to respond for your
-                            entire household and answer custom questions.
-                        </p>
+                    <div className="mt-8">
+                        <RSVPForm
+                            household={householdData}
+                            guests={guestsData}
+                            sessions={sessionsData}
+                            existingRsvps={rsvpsData}
+                            theme={theme}
+                        />
                     </div>
                 </div>
             </div>

@@ -43,6 +43,16 @@ export default async function EventPage({
         .select("*", { count: "exact", head: true })
         .eq("event_id", eventId);
 
+    // Fetch RSVP count
+    // interacting with rsvps table which is linked to event_sessions
+    const { count: rsvpCount } = await supabase
+        .from("rsvps")
+        .select(`
+            *,
+            event_sessions!inner(event_id)
+        `, { count: "exact", head: true })
+        .eq("event_sessions.event_id", eventId);
+
     const eventData: any = event;
 
     return (
@@ -88,7 +98,7 @@ export default async function EventPage({
                             <p className="text-sm text-muted-foreground">Sessions</p>
                         </div>
                         <div className="border rounded-lg p-6">
-                            <div className="text-2xl font-bold">0</div>
+                            <div className="text-2xl font-bold">{rsvpCount || 0}</div>
                             <p className="text-sm text-muted-foreground">RSVPs Received</p>
                         </div>
                     </div>

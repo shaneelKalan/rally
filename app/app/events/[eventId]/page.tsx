@@ -3,6 +3,7 @@ import { notFound, redirect } from "next/navigation";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
+import RSVPDashboard from "@/components/rsvp/rsvp-dashboard";
 
 export default async function EventPage({
     params,
@@ -53,7 +54,26 @@ export default async function EventPage({
         `, { count: "exact", head: true })
         .eq("event_sessions.event_id", eventId);
 
+    // Fetch Guest List with RSVPs for Dashboard
+    const { data: guestsWithRsvps } = await supabase
+        .from("guests")
+        .select(`
+            *,
+            rsvps(*)
+        `)
+        .eq("event_id", eventId)
+        .order("last_name", { ascending: true });
+
+    // Fetch sessions for the dashboard columns
+    const { data: sessions } = await supabase
+        .from("event_sessions")
+        .select("*")
+        .eq("event_id", eventId)
+        .order("start_datetime", { ascending: true });
+
     const eventData: any = event;
+    const guestListData = guestsWithRsvps || [];
+    const sessionsList = sessions || [];
 
     return (
         <div className="space-y-6">
@@ -138,9 +158,7 @@ export default async function EventPage({
                 </TabsContent>
 
                 <TabsContent value="rsvps">
-                    <div className="border rounded-lg p-6">
-                        <p className="text-muted-foreground">RSVP analytics coming soon...</p>
-                    </div>
+                    <RSVPDashboard guests={guestListData} sessions={sessionsList} />
                 </TabsContent>
             </Tabs>
         </div>

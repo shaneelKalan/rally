@@ -4,7 +4,9 @@ import { useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Check, X, Loader2 } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Check, X, Loader2, ChevronDown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useRouter } from "next/navigation";
 
@@ -13,10 +15,20 @@ interface RSVPFormProps {
     guests: any[];
     sessions: any[];
     existingRsvps: any[];
+    questions?: any[];
+    existingResponses?: any[];
     theme: any;
 }
 
-export default function RSVPForm({ household, guests, sessions, existingRsvps, theme }: RSVPFormProps) {
+export default function RSVPForm({
+    household,
+    guests,
+    sessions,
+    existingRsvps,
+    questions = [],
+    existingResponses = [],
+    theme
+}: RSVPFormProps) {
     const router = useRouter();
     const [loading, setLoading] = useState(false);
     const [completed, setCompleted] = useState(false);
@@ -30,6 +42,15 @@ export default function RSVPForm({ household, guests, sessions, existingRsvps, t
         return initial;
     });
 
+    // State to track Answers: { [guestId_questionId]: value }
+    const [answers, setAnswers] = useState<Record<string, any>>(() => {
+        const initial: Record<string, any> = {};
+        existingResponses.forEach((response) => {
+            initial[`${response.guest_id}_${response.question_id}`] = response.answer_text || response.answer_json;
+        });
+        return initial;
+    });
+
     const handleSelection = (guestId: string, sessionId: string, status: string) => {
         setSelections(prev => ({
             ...prev,
@@ -37,19 +58,38 @@ export default function RSVPForm({ household, guests, sessions, existingRsvps, t
         }));
     };
 
+    const handleAnswer = (guestId: string, questionId: string, value: any) => {
+        setAnswers(prev => ({
+            ...prev,
+            [`${guestId}_${questionId}`]: value
+        }));
+    };
+
+    const isQuestionVisible = (question: any, guestId: string) => {
+        // If question is tied to a session, only show if guest is attending that session
+        if (question.event_session_id) {
+            const rsvpKey = `${guestId}_${question.event_session_id}`;
+            const status = selections[rsvpKey];
+            if (status !== "attending") return false;
+        }
+        return true;
+    };
+
     const handleSubmit = async () => {
         setLoading(true);
         const supabase = createClient();
-        const upserts = [];
+        const rsvpUpserts: any[] = [];
+        const responseUpserts: any[] = [];
 
         // Build list of updates
         for (const guest of guests) {
+            // RSVPs
             for (const session of sessions) {
                 const key = `${guest.id}_${session.id}`;
                 const status = selections[key];
 
-                if (status) { // Only upsert if a selection is made
-                    upserts.push({
+                if (status) {
+                    rsvpUpserts.push({
                         guest_id: guest.id,
                         event_session_id: session.id,
                         status: status,
@@ -57,25 +97,61 @@ export default function RSVPForm({ household, guests, sessions, existingRsvps, t
                     });
                 }
             }
-        }
 
-        if (upserts.length > 0) {
-            // We need to upsert each one. Supabase upsert works with unique constraints.
-            // Our Schema has UNIQUE(event_session_id, guest_id) on rsvps table.
-            const { error } = await supabase
-                .from("rsvps")
-                .upsert(upserts as any, { onConflict: "event_session_id, guest_id" });
+            // Answers
+            for (const question of questions) {
+                if (!isQuestionVisible(question, guest.id)) continue;
 
-            if (error) {
-                console.error("Error saving RSVPs:", error);
-                alert("There was a problem saving your RSVP. Please try again.");
-            } else {
-                setCompleted(true);
-                router.refresh(); // Refresh server data
+                const key = `${guest.id}_${question.id}`;
+                const value = answers[key];
+
+                if (value !== undefined && value !== "") {
+                    responseUpserts.push({
+                        guest_id: guest.id,
+                        question_id: question.id,
+                        event_session_id: question.event_session_id,
+                        answer_text: typeof value === 'string' ? value : JSON.stringify(value),
+                        answer_json: typeof value === 'object' ? value : null
+                    });
+                }
             }
-        } else {
-            setCompleted(true);
         }
+
+        try {
+            // Save RSVPs
+            if (rsvpUpserts.length > 0) {
+                const { error } = await supabase
+                    .from("rsvps")
+                    .upsert(rsvpUpserts as any, { onConflict: "event_session_id, guest_id" });
+                if (error) throw error;
+            }
+
+            // Save Responses
+            if (responseUpserts.length > 0) {
+                const guestIds = guests.map(g => g.id);
+                const questionIds = questions.map(q => q.id);
+
+                // Best effort cleanup + insert
+                await supabase
+                    .from("responses")
+                    .delete()
+                    .in("guest_id", guestIds)
+                    .in("question_id", questionIds);
+
+                const { error } = await supabase
+                    .from("responses")
+                    .insert(responseUpserts as any);
+
+                if (error) throw error;
+            }
+
+            setCompleted(true);
+            router.refresh();
+        } catch (error) {
+            console.error("Error saving RSVP:", error);
+            alert("There was a problem saving your RSVP. Please try again.");
+        }
+
         setLoading(false);
     };
 
@@ -110,77 +186,138 @@ export default function RSVPForm({ household, guests, sessions, existingRsvps, t
 
                 <div className="space-y-8">
                     {guests.map((guest) => (
-                        <div key={guest.id} className="p-4 rounded-xl bg-white/50 border border-white/50 backdrop-blur-sm">
-                            <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+                        <div key={guest.id} className="p-6 rounded-2xl bg-white/50 border border-white/50 backdrop-blur-sm shadow-sm">
+                            <h3 className="text-lg font-bold mb-6 flex items-center gap-2 text-primary">
                                 {guest.first_name} {guest.last_name}
                             </h3>
 
-                            <div className="space-y-4">
-                                {sessions.map((session) => {
-                                    const key = `${guest.id}_${session.id}`;
-                                    const currentStatus = selections[key];
+                            <div className="space-y-6">
+                                {/* Sessions */}
+                                <div>
+                                    <h4 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-3">Events</h4>
+                                    <div className="space-y-4">
+                                        {sessions.map((session) => {
+                                            const key = `${guest.id}_${session.id}`;
+                                            const currentStatus = selections[key];
 
-                                    return (
-                                        <div key={session.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 last:pb-0 border-b last:border-0 border-black/5">
-                                            <div>
-                                                <p className="font-medium">{session.name}</p>
-                                                <p className="text-xs text-muted-foreground">
-                                                    {new Date(session.start_datetime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                                </p>
-                                            </div>
+                                            return (
+                                                <div key={session.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-3 rounded-xl hover:bg-white/40 transition-colors">
+                                                    <div>
+                                                        <p className="font-medium">{session.name}</p>
+                                                        <p className="text-xs text-muted-foreground">
+                                                            {new Date(session.start_datetime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                                        </p>
+                                                    </div>
 
-                                            <div className="flex items-center gap-2">
-                                                <Button
-                                                    type="button"
-                                                    size="sm"
-                                                    variant={currentStatus === "attending" ? "default" : "outline"}
-                                                    className={cn(
-                                                        "rounded-full transition-all duration-300",
-                                                        currentStatus === "attending"
-                                                            ? "bg-primary text-white shadow-lg scale-105"
-                                                            : "hover:bg-primary/10 hover:text-primary hover:border-primary/50"
-                                                    )}
-                                                    onClick={() => handleSelection(guest.id, session.id, "attending")}
-                                                >
-                                                    <Check className="h-4 w-4 mr-1" />
-                                                    Attending
-                                                </Button>
+                                                    <div className="flex items-center gap-2">
+                                                        <Button
+                                                            type="button"
+                                                            size="sm"
+                                                            variant={currentStatus === "attending" ? "default" : "outline"}
+                                                            className={cn(
+                                                                "rounded-full transition-all duration-300",
+                                                                currentStatus === "attending"
+                                                                    ? "bg-primary text-white shadow-lg scale-105 ring-2 ring-primary ring-offset-2"
+                                                                    : "hover:bg-primary/10 hover:text-primary border-primary/20"
+                                                            )}
+                                                            onClick={() => handleSelection(guest.id, session.id, "attending")}
+                                                        >
+                                                            <Check className="h-4 w-4 mr-1" />
+                                                            Accept
+                                                        </Button>
 
-                                                <Button
-                                                    type="button"
-                                                    size="sm"
-                                                    variant={currentStatus === "not_attending" ? "destructive" : "outline"}
-                                                    className={cn(
-                                                        "rounded-full transition-all duration-300",
-                                                        currentStatus === "not_attending"
-                                                            ? "bg-destructive text-white shadow-lg scale-105"
-                                                            : "hover:bg-destructive/10 hover:text-destructive hover:border-destructive/50"
-                                                    )}
-                                                    onClick={() => handleSelection(guest.id, session.id, "not_attending")}
-                                                >
-                                                    <X className="h-4 w-4 mr-1" />
-                                                    Decline
-                                                </Button>
-                                            </div>
+                                                        <Button
+                                                            type="button"
+                                                            size="sm"
+                                                            variant={currentStatus === "not_attending" ? "destructive" : "outline"}
+                                                            className={cn(
+                                                                "rounded-full transition-all duration-300",
+                                                                currentStatus === "not_attending"
+                                                                    ? "bg-destructive text-white shadow-lg scale-105 ring-2 ring-destructive ring-offset-2"
+                                                                    : "hover:bg-destructive/10 hover:text-destructive border-destructive/20"
+                                                            )}
+                                                            onClick={() => handleSelection(guest.id, session.id, "not_attending")}
+                                                        >
+                                                            <X className="h-4 w-4 mr-1" />
+                                                            Decline
+                                                        </Button>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+
+                                {/* Questions */}
+                                {questions.length > 0 && questions.some(q => isQuestionVisible(q, guest.id)) && (
+                                    <div className="pt-4 border-t border-black/5">
+                                        <h4 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">Questions</h4>
+                                        <div className="space-y-6">
+                                            {questions.map((question) => {
+                                                if (!isQuestionVisible(question, guest.id)) return null;
+
+                                                const key = `${guest.id}_${question.id}`;
+                                                // Default to empty string if undefined
+                                                const value = answers[key] ?? "";
+
+                                                return (
+                                                    <div key={question.id} className="space-y-2">
+                                                        <Label className="text-base font-medium">
+                                                            {question.label}
+                                                            {question.is_required && <span className="text-destructive ml-1">*</span>}
+                                                        </Label>
+                                                        {question.description && (
+                                                            <p className="text-sm text-muted-foreground -mt-1 mb-2">{question.description}</p>
+                                                        )}
+
+                                                        {question.type === "text" && (
+                                                            <Input
+                                                                value={value}
+                                                                onChange={(e) => handleAnswer(guest.id, question.id, e.target.value)}
+                                                                placeholder="Type your answer..."
+                                                                className="bg-white/50 backdrop-blur-sm border-black/10 focus:border-primary/50 focus:ring-primary/20 rounded-xl"
+                                                            />
+                                                        )}
+
+                                                        {question.type === "single_choice" && question.options && (
+                                                            <div className="flex flex-col space-y-2">
+                                                                {question.options.options.map((opt: string) => (
+                                                                    <label key={opt} className="flex items-center space-x-3 cursor-pointer p-2 rounded-lg hover:bg-black/5 transition-colors">
+                                                                        <input
+                                                                            type="radio"
+                                                                            name={key}
+                                                                            value={opt}
+                                                                            checked={value === opt}
+                                                                            onChange={(e) => handleAnswer(guest.id, question.id, e.target.value)}
+                                                                            className="w-4 h-4 text-primary border-gray-300 focus:ring-primary"
+                                                                        />
+                                                                        <span className="text-sm font-medium">{opt}</span>
+                                                                    </label>
+                                                                ))}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })}
                                         </div>
-                                    );
-                                })}
+                                    </div>
+                                )}
                             </div>
                         </div>
                     ))}
                 </div>
 
-                <div className="mt-8 pt-6 border-t border-black/5 flex justify-end">
+                <div className="mt-8 pt-6 border-t border-black/5 flex justify-end sticky bottom-0 bg-white/80 backdrop-blur-md p-4 -mx-6 -mb-6 border-t z-10 rounded-b-2xl">
                     <Button
                         onClick={handleSubmit}
                         disabled={loading}
                         size="lg"
-                        className="rounded-full min-w-[150px] shadow-xl hover:shadow-2xl transition-all"
+                        className="rounded-full min-w-[200px] h-12 text-base shadow-xl hover:shadow-2xl transition-all"
                     >
                         {loading ? (
                             <>
-                                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                Sending...
+                                <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                                Sending Response...
                             </>
                         ) : (
                             "Submit RSVP"

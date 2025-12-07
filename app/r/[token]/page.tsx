@@ -60,6 +60,23 @@ export default async function RSVPPage({
 
     const rsvpsData = existingRsvps || [];
 
+    // Fetch questions
+    const { data: questions } = await supabase
+        .from("questions")
+        .select("*")
+        .eq("event_id", event.id)
+        .order("display_order", { ascending: true });
+
+    const questionsData = questions || [];
+
+    // Fetch existing responses
+    const { data: existingResponses } = await supabase
+        .from("responses")
+        .select("*")
+        .in("guest_id", guestIds);
+
+    const responsesData = existingResponses || [];
+
     return (
         <div className="min-h-screen bg-liquid">
             {/* Event Header */}
@@ -178,6 +195,8 @@ export default async function RSVPPage({
                             guests={guestsData}
                             sessions={sessionsData}
                             existingRsvps={rsvpsData}
+                            questions={questionsData}
+                            existingResponses={responsesData}
                             theme={theme}
                         />
                     </div>
